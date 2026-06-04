@@ -1,0 +1,6 @@
+aws_region             = "eu-west-2"
+project_name           = "ai-document-analyser"
+environment            = "dev"
+enable_bedrock_summary = false
+# bedrock_model_id     = "anthropic.claude-3-haiku-20240307-v1:0"
+enable_cognito_authorizer = false

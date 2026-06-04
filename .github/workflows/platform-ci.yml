@@ -1,0 +1,46 @@
+name: Platform CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile Python Lambda code
+        run: |
+          python -m py_compile src/api/upload_url_handler.py src/processor/document_processor.py src/shared/text_utils.py
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.8.5
+
+      - name: Terraform format check
+        working-directory: terraform/environments/dev
+        run: terraform fmt -check
+
+      - name: Terraform init
+        working-directory: terraform/environments/dev
+        run: terraform init -backend=false
+
+      - name: Terraform validate
+        working-directory: terraform/environments/dev
+        run: terraform validate
