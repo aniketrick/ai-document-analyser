@@ -89,9 +89,9 @@ resource "aws_dynamodb_table" "documents" {
 }
 
 resource "aws_sqs_queue" "processor_dlq" {
-  name                    = "${local.name_prefix}-processor-dlq"
+  name                      = "${local.name_prefix}-processor-dlq"
   message_retention_seconds = 1209600
-  tags                    = local.common_tags
+  tags                      = local.common_tags
 }
 
 resource "aws_sqs_queue" "processor" {
