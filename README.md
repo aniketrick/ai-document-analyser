@@ -1,166 +1,87 @@
-# AI-Powered Enterprise Document Analyser
+# AI Document Analyser
 
-A production-style AWS serverless project that ingests enterprise documents, processes them asynchronously, extracts text, redacts sensitive data, generates an AI summary, and stores searchable metadata.
+A serverless pipeline on AWS. You ask the API for an upload link, upload a document, and the pipeline pulls out the text, removes personal data, writes a short summary and saves the result to DynamoDB. Everything is built with Terraform.
 
-This project is designed for Cloud Engineer / DevOps Engineer / AWS Solutions Architect portfolios. It demonstrates event-driven architecture, least-privilege IAM, asynchronous processing, serverless compute, and CI validation.
+I built it to practise event-driven design: how to make each step retry on its own, and how to make sure a document that fails is kept somewhere rather than lost.
 
-## Architecture
+## How it works
 
 ```text
 Client
-  |
-  | 1. Request pre-signed upload URL
-  v
-API Gateway HTTP API
-  |
-  v
-Lambda: upload-url-api
-  |
-  v
-S3 Upload Bucket
-  |
-  | 2. ObjectCreated event
-  v
-EventBridge Rule
-  |
-  v
-SQS Processing Queue + DLQ
-  |
-  v
+  │  1. POST /upload-url
+  ▼
+API Gateway (HTTP API) ──► Lambda: upload-url-api ──► returns a pre-signed S3 link
+  │
+  │  2. Client uploads the file straight to S3
+  ▼
+S3 upload bucket ──► EventBridge rule (Object Created)
+  ▼
+SQS processing queue ──(fails 3 times)──► dead-letter queue
+  ▼
 Lambda: document-processor
-  |
-  |-- Textract: extract text
-  |-- Comprehend: detect PII and redact sensitive entities
-  |-- Bedrock: generate business summary
-  v
-DynamoDB Document Metadata Table
-  |
-  v
-CloudWatch Logs and Metrics
+  ├── Textract: extract the text
+  ├── Comprehend: find personal data and replace it with [TYPE_REDACTED]
+  └── Bedrock: write a short summary (off by default, see below)
+  ▼
+DynamoDB: status, redacted text and summary for each document
 ```
 
-## What this project proves
+## What's in it
 
-- Event-driven document ingestion using S3, EventBridge, SQS and Lambda
-- Fault-tolerant processing using queue retries and a dead-letter queue
-- Secure API upload pattern using pre-signed S3 URLs
-- Serverless document analysis with Textract, Comprehend and Bedrock-ready summarisation
-- Least-privilege IAM roles for Lambda functions
-- DynamoDB persistence for extracted metadata, redaction results and summaries
-- GitHub Actions pipeline for Terraform and Python validation
+- **Pre-signed upload links.** Files go straight to S3, so the API never handles the file itself. Only PDF, PNG, JPEG and plain text are accepted, and the link expires.
+- **A queue between S3 and the processor.** If processing fails, SQS tries again. After three failed attempts the message moves to a dead-letter queue, which keeps it for 14 days.
+- **The queue's visibility timeout is set longer than the Lambda timeout**, so a message isn't picked up twice while it's still being worked on.
+- **A status for each document** in DynamoDB (PROCESSING, then COMPLETED or FAILED), with point-in-time recovery switched on.
+- **A separate IAM role for each Lambda**, each with only the actions it needs.
+- **A locked-down S3 bucket**: encrypted, versioned and blocked from public access.
+- **Optional extras, both off by default to keep costs down:**
+  - Cognito sign-in on the upload endpoint (`enable_cognito_authorizer = true`)
+  - Real Bedrock summaries (`enable_bedrock_summary = true`, needs model access in your account)
 
-## Tech Stack
+## CI
 
-| Area | Tools |
-|---|---|
-| Cloud | AWS S3, Lambda, API Gateway, SQS, EventBridge, DynamoDB, CloudWatch |
-| AI / ML | Amazon Textract, Amazon Comprehend, Amazon Bedrock |
-| IaC | Terraform |
-| Language | Python 3.12 |
-| CI/CD | GitHub Actions |
-| Security | IAM least privilege, S3 encryption, public access block, pre-signed URLs |
+GitHub Actions runs on every push and pull request. It:
 
-## Repository Structure
+- compiles the Python
+- runs the unit tests
+- checks Terraform formatting
+- runs `terraform validate`
 
-```text
-.
-├── .github/workflows/platform-ci.yml
-├── docs/
-│   ├── architecture.md
-│   ├── screenshots.md
-│   └── cost-and-cleanup.md
-├── examples/
-│   └── sample-api-event.json
-├── scripts/
-│   ├── package_lambdas.sh
-│   └── smoke_test.sh
-├── src/
-│   ├── api/
-│   │   └── upload_url_handler.py
-│   ├── processor/
-│   │   └── document_processor.py
-│   └── shared/
-│       └── text_utils.py
-├── terraform/environments/dev/
-│   ├── main.tf
-│   ├── variables.tf
-│   ├── outputs.tf
-│   ├── versions.tf
-│   └── terraform.tfvars.example
-└── tests/
-    └── test_text_utils.py
-```
+It doesn't deploy anything yet.
 
-## Prerequisites
+## Run it yourself
 
-- AWS CLI configured with an AWS account
-- Terraform >= 1.5
-- Python 3.12
-- Bash shell
-- Bedrock model access enabled if you want real AI summaries
-
-## Setup
-
-Clone the repository and package the Lambda functions:
+You'll need the AWS CLI, Terraform 1.5 or later, and Python 3.12.
 
 ```bash
-chmod +x scripts/package_lambdas.sh
 ./scripts/package_lambdas.sh
-```
 
-Deploy infrastructure:
-
-```bash
 cd terraform/environments/dev
+cp terraform.tfvars.example terraform.tfvars   # change the values if you need to
 terraform init
-terraform plan
 terraform apply
 ```
 
-Type `yes` when Terraform asks for approval.
-
-## Upload Flow
-
-After deployment, Terraform outputs an API endpoint.
-
-Request an upload URL:
+Then request an upload link (or run `scripts/smoke_test.sh`):
 
 ```bash
+export UPLOAD_URL_ENDPOINT=$(terraform output -raw upload_url_endpoint)
 curl -X POST "$UPLOAD_URL_ENDPOINT" \
   -H "content-type: application/json" \
   -d '{"fileName":"sample.pdf","contentType":"application/pdf"}'
 ```
 
-Then upload the document using the returned `uploadUrl`.
-
-## Local Validation
-
-Run Python checks:
+Run the checks locally:
 
 ```bash
-python -m py_compile src/api/upload_url_handler.py src/processor/document_processor.py src/shared/text_utils.py
 python -m unittest discover -s tests
 ```
 
-Run Terraform validation:
+**Cost:** Textract, Comprehend and Bedrock are charged per use. Run `terraform destroy` when you've finished. There's more detail in `docs/cost-and-cleanup.md`.
 
-```bash
-cd terraform/environments/dev
-terraform init -backend=false
-terraform validate
-```
+## Not done yet
 
-## Cost Warning
-
-This project can create AWS resources. Most resources are low-cost or free-tier friendly when lightly used, but charges can occur from Lambda invocations, S3 storage, DynamoDB, SQS, CloudWatch logs, Textract, Comprehend, API Gateway and Bedrock usage.
-
-Destroy resources when finished:
-
-```bash
-cd terraform/environments/dev
-terraform destroy
-```
-
-## Resume Bullet
-
-Built an AI-powered enterprise document analyser on AWS using S3, EventBridge, SQS, Lambda, Textract, Comprehend, Bedrock and DynamoDB, implementing asynchronous processing, PII redaction, least-privilege IAM and CloudWatch observability through Terraform-managed infrastructure.
+- There are unit tests for the text helpers only. Next I'll add tests for the two Lambda handlers, with AWS calls mocked.
+- CloudWatch alarms on the dead-letter queue and on Lambda errors.
+- Large PDFs. The processor uses Textract's synchronous call, which only handles single-page documents. Multi-page files need the asynchronous Textract API.
+- Terraform state is local. It should move to S3 with locking.
